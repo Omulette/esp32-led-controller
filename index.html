@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 LED Controller</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 400px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            text-align: center;
+            color: #667eea;
+            margin-bottom: 30px;
+            font-size: 2em;
+        }
+
+        .status {
+            text-align: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        button {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 15px;
+            transition: all 0.3s;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-connect {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-connect:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+
+        .btn-on {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-on:hover:not(:disabled) {
+            background: #218838;
+        }
+
+        .btn-off {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-off:hover:not(:disabled) {
+            background: #c82333;
+        }
+
+        .controls {
+            display: none;
+        }
+
+        .controls.visible {
+            display: block;
+        }
+
+        .slider-group {
+            margin: 20px 0;
+        }
+
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 8px;
+            border-radius: 5px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .error.visible {
+            display: block;
+        }
+
+        .info {
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🔆 LED Controller</h1>
+        
+        <div id="error" class="error"></div>
+        
+        <div id="status" class="status disconnected">
+            Nicht verbunden
+        </div>
+
+        <button id="connectBtn" class="btn-connect">
+            Mit ESP32 verbinden
+        </button>
+
+        <div id="controls" class="controls">
+            <button id="onBtn" class="btn-on">
+                💡 Einschalten
+            </button>
+
+            <button id="offBtn" class="btn-off">
+                ⚫ Ausschalten
+            </button>
+
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>Helligkeit</span>
+                    <span id="brightnessValue">100%</span>
+                </div>
+                <input type="range" id="brightness" min="0" max="255" value="255">
+            </div>
+        </div>
+
+        <div class="info">
+            💡 Verwenden Sie Chrome oder Edge<br>
+            📱 iOS: Bluefy App erforderlich
+        </div>
+    </div>
+
+    <script>
+        // BLE UUIDs (müssen mit ESP32-Code übereinstimmen)
+        const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+        const SWITCH_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+        const BRIGHTNESS_UUID = '8f85de94-8e23-4f28-8212-6493f9c236d9';
+
+        // Globale Variablen
+        let device = null;
+        let switchChar = null;
+        let brightnessChar = null;
+
+        // DOM Elemente
+        const connectBtn = document.getElementById('connectBtn');
+        const onBtn = document.getElementById('onBtn');
+        const offBtn = document.getElementById('offBtn');
+        const brightness = document.getElementById('brightness');
+        const brightnessValue = document.getElementById('brightnessValue');
+        const status = document.getElementById('status');
+        const controls = document.getElementById('controls');
+        const errorDiv = document.getElementById('error');
+
+        // Prüfen ob Bluetooth verfügbar ist
+        if (!navigator.bluetooth) {
+            showError('Web Bluetooth wird nicht unterstützt. Bitte verwenden Sie Chrome, Edge oder die Bluefy-App (iOS).');
+            connectBtn.disabled = true;
+        }
+
+        // Verbinden
+        connectBtn.addEventListener('click', async () => {
+            try {
+                hideError();
+                connectBtn.textContent = 'Verbinde...';
+                connectBtn.disabled = true;
+
+                // Gerät auswählen
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [SERVICE_UUID] }]
+                });
+
+                // Verbinden
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                
+                // Charakteristiken abrufen
+                switchChar = await service.getCharacteristic(SWITCH_UUID);
+                brightnessChar = await service.getCharacteristic(BRIGHTNESS_UUID);
+
+                // Verbindung erfolgreich
+                device.addEventListener('gattserverdisconnected', onDisconnected);
+                onConnected();
+
+            } catch (error) {
+                console.error('Fehler:', error);
+                showError('Verbindung fehlgeschlagen: ' + error.message);
+                connectBtn.textContent = 'Mit ESP32 verbinden';
+                connectBtn.disabled = false;
+            }
+        });
+
+        // Einschalten
+        onBtn.addEventListener('click', async () => {
+            try {
+                const encoder = new TextEncoder();
+                await switchChar.writeValue(encoder.encode('1'));
+                console.log('LED eingeschaltet');
+            } catch (error) {
+                showError('Fehler beim Einschalten: ' + error.message);
+            }
+        });
+
+        // Ausschalten
+        offBtn.addEventListener('click', async () => {
+            try {
+                const encoder = new TextEncoder();
+                await switchChar.writeValue(encoder.encode('0'));
+                console.log('LED ausgeschaltet');
+            } catch (error) {
+                showError('Fehler beim Ausschalten: ' + error.message);
+            }
+        });
+
+        // Helligkeit ändern
+        brightness.addEventListener('input', async (e) => {
+            const value = parseInt(e.target.value);
+            const percent = Math.round((value / 255) * 100);
+            brightnessValue.textContent = percent + '%';
+
+            try {
+                const buffer = new Uint8Array([value]);
+                await brightnessChar.writeValue(buffer);
+            } catch (error) {
+                console.error('Fehler beim Dimmen:', error);
+            }
+        });
+
+        // Verbunden
+        function onConnected() {
+            status.textContent = '✓ Verbunden';
+            status.className = 'status connected';
+            connectBtn.style.display = 'none';
+            controls.classList.add('visible');
+        }
+
+        // Getrennt
+        function onDisconnected() {
+            status.textContent = 'Nicht verbunden';
+            status.className = 'status disconnected';
+            connectBtn.style.display = 'block';
+            connectBtn.textContent = 'Mit ESP32 verbinden';
+            connectBtn.disabled = false;
+            controls.classList.remove('visible');
+            device = null;
+            switchChar = null;
+            brightnessChar = null;
+        }
+
+        // Fehler anzeigen
+        function showError(message) {
+            errorDiv.textContent = '⚠️ ' + message;
+            errorDiv.classList.add('visible');
+        }
+
+        // Fehler ausblenden
+        function hideError() {
+            errorDiv.classList.remove('visible');
+        }
+    </script>
+</body>
+</html>
